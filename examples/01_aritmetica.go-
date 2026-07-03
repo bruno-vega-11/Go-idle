@@ -1,0 +1,10 @@
+// Ejemplo 1: aritmetica basica con enteros
+// Muestra: declaracion de variables (var), tipos int, operadores + - *,
+// y la funcion incorporada println.
+func main() {
+    var a int = 7;
+    var b int = 5;
+    println(a + b);
+    println(a * b);
+    println(a - b);
+};

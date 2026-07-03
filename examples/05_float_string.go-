@@ -1,0 +1,12 @@
+// Ejemplo 5: numeros de punto flotante y cadenas
+// Muestra: tipo float64 (registro SSE %xmm0 en el codigo generado),
+// aritmetica flotante, tipo string y concatenacion de cadenas con '+'.
+func main() {
+    var pi float64 = 3.14159;
+    var r float64 = 2.0;
+    var area float64 = pi * r * r;
+    println(area);
+
+    var msg string = "Hola" + " mundo";
+    println(msg);
+};

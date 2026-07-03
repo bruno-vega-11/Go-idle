@@ -1,0 +1,18 @@
+// Ejemplo 2: funciones con parametros/retorno y bucle for con clausula
+// Muestra: declaracion de funcion (func ... int), return, for con
+// inicializacion/condicion/post, y llamadas a funcion.
+func factorial(n int) int {
+    var r int = 1;
+    var i int = 1;
+    for i = 1; i <= n; i = i + 1 {
+        r = r * i;
+    };
+    return r;
+};
+
+func main() {
+    var i int = 1;
+    for i = 1; i <= 6; i = i + 1 {
+        println(factorial(i));
+    };
+};

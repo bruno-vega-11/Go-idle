@@ -1,0 +1,17 @@
+// Ejemplo 4: tipos struct, metodos con receptor puntero y literales compuestos
+// Muestra: type ... struct, method con receptor (p *Point), acceso a campos
+// (p.x), literal compuesto Point{x: .., y: ..} y llamada a metodo.
+type Point struct {
+    x int;
+    y int;
+};
+
+func (p *Point) suma() int {
+    return p.x + p.y;
+};
+
+func main() {
+    var p Point;
+    p = Point{x: 10, y: 32};
+    println(p.suma());
+};

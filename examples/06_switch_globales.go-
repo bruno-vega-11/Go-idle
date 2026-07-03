@@ -1,0 +1,26 @@
+// Ejemplo 6: constantes/variables globales y sentencia switch
+// Muestra: const y var a nivel de paquete (viven en .data, inicializadas por
+// __init_globals antes de main), y switch con case/default.
+const LIMITE int = 3;
+
+var contador int = 0;
+
+func clasifica(n int) int {
+    switch n {
+        case 1:
+            return 10;
+        case 2:
+            return 20;
+        default:
+            return 0;
+    };
+};
+
+func main() {
+    var i int = 1;
+    for i = 1; i <= LIMITE; i = i + 1 {
+        contador = contador + 1;
+        println(clasifica(i));
+    };
+    println(contador);
+};
