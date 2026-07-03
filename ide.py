@@ -20,35 +20,84 @@ import queue
 import re
 import threading
 import tkinter as tk
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, font as tkfont, messagebox, ttk
 
 import backend
 
-# --- Paleta (tema oscuro tipo editor) --------------------------------------
-BG        = "#1e1e2e"
-BG_PANEL  = "#181825"
-BG_EDITOR = "#1e1e2e"
-FG        = "#cdd6f4"
-FG_DIM    = "#9399b2"
-ACCENT    = "#89b4fa"
-OK_COLOR  = "#a6e3a1"
-ERR_COLOR = "#f38ba8"
-WARN_COLOR = "#f9e2af"
-GUTTER_BG = "#181825"
-SEL_BG    = "#45475a"
+# --- Paleta (tema oscuro azul/verde, tipo editor) --------------------------
+BG        = "#0b1521"
+BG_PANEL  = "#0e1c2b"
+BG_EDITOR = "#0b1521"
+BG_RAISED = "#122335"   # paneles ligeramente elevados (headers, tabs activos)
+FG        = "#dbe9f4"
+FG_DIM    = "#5f7c91"
+ACCENT    = "#4fc3e0"   # azul-cian principal
+ACCENT2   = "#4fd8b0"   # verde-turquesa secundario (AST, acentos)
+OK_COLOR  = "#5fd88f"
+ERR_COLOR = "#ef7b7b"
+WARN_COLOR = "#e8c072"
+GUTTER_BG = BG_EDITOR    # mismo fondo que el editor: sin costura visible
+SEL_BG    = "#173247"
 EDITOR_FONT = ("Consolas", 12)
 MONO_FONT   = ("Consolas", 11)
 UI_FONT     = ("Segoe UI", 10)
 
 # Colores de tokens para el resaltado del editor
 SYN = {
-    "keyword": "#cba6f7",
-    "type":    "#89dceb",
-    "builtin": "#f9e2af",
-    "string":  "#a6e3a1",
-    "number":  "#fab387",
-    "comment": "#6c7086",
-    "op":      "#89b4fa",
+    "keyword": "#6fb8f2",
+    "type":    "#4fd8b0",
+    "builtin": "#e8c072",
+    "string":  "#8fdc9a",
+    "number":  "#67cde0",
+    "comment": "#516575",
+    "op":      "#4fc3e0",
+}
+
+# Estilo del arbol AST: (predicado sobre el label crudo) -> (icono, tag)
+def _ast_icon_and_tag(label):
+    if label == "Programa":
+        return "✦", "root"                      # ✦
+    if label.startswith("FunctionDecl") or label.startswith("MethodDecl"):
+        return "ƒ", "func"                       # ƒ
+    if label.startswith("Call:"):
+        return "λ", "call"                       # λ
+    if label.startswith("VarDecl") or label.startswith("var "):
+        return "●", "var"                        # ●
+    if label.startswith("ConstDecl") or label.startswith("const "):
+        return "●", "const"
+    if label.startswith("TypeDecl") or label.startswith("type ") or label.startswith("campo:"):
+        return "◆", "type"                       # ◆
+    if label.startswith("Literal ("):
+        if "string" in label.split(")")[0]:
+            return "❝", "lit_str"                # ❝
+        return "❝", "lit_num"
+    if label.startswith("Ident:"):
+        return "◇", "ident"                      # ◇
+    if (label.startswith("BinaryExp") or label.startswith("UnaryExp")
+            or label.startswith("Assignment") or label.startswith("IncDecStmt")):
+        return "±", "op"                         # ±
+    if label in ("IfStmt", "ForStmt", "SwitchStmt", "ReturnStmt", "BreakStmt",
+                 "ContinueStmt", "BlockStmt", "DeclStmt", "ExprStmt", "ForClause"):
+        return "▸", "flow"                       # ▸
+    if label in ("then", "else", "else-if", "condicion", "case", "default",
+                 "cuerpo", "init", "post"):
+        return "▸", "flow"
+    return "·", "dim"                            # ·
+
+
+AST_TAG_COLORS = {
+    "root": ACCENT2,
+    "func": ACCENT2,
+    "call": ACCENT2,
+    "var": ACCENT,
+    "const": WARN_COLOR,
+    "type": "#4fd8b0",
+    "lit_str": OK_COLOR,
+    "lit_num": "#67cde0",
+    "ident": FG,
+    "op": WARN_COLOR,
+    "flow": ACCENT,
+    "dim": FG_DIM,
 }
 
 KEYWORDS = {
@@ -57,6 +106,37 @@ KEYWORDS = {
 }
 TYPES = {"int", "float64", "bool", "string"}
 BUILTINS = {"println", "print", "true", "false", "new", "make", "len"}
+
+INDENT_WIDTH = 4  # ancho de indentacion (en espacios) que inserta la tecla Tab
+
+# --- Coloreado del volcado de tokens (TOKEN(TIPO, "texto") [line N]) --------
+TOKEN_LINE_RE = re.compile(
+    r'TOKEN\((?P<type>\w+)(?:,\s*"(?P<text>(?:[^"\\]|\\.)*)")?\)(?P<lineinfo>\s*\[line\s*\d+\])?'
+)
+TOK_KEYWORDS = {
+    "BREAK", "CASE", "CHAN", "CONST", "CONTINUE", "DEFAULT", "DEFER", "ELSE",
+    "FALLTHROUGH", "FOR", "FUNC", "GO", "GOTO", "IF", "IMPORT", "INTERFACE",
+    "MAP", "PACKAGE", "RANGE", "RETURN", "SELECT", "STRUCT", "SWITCH", "TYPE",
+    "VAR",
+}
+TOK_NUM = {"INT_LIT", "FLOAT_LIT", "IMAGINARY_LIT", "RUNE_LIT"}
+TOK_STR = {"STRING_LIT"}
+
+
+def _token_tag(type_name):
+    if type_name in TOK_KEYWORDS:
+        return "tok_keyword"
+    if type_name in TOK_NUM:
+        return "tok_num"
+    if type_name in TOK_STR:
+        return "tok_str"
+    if type_name == "ID":
+        return "tok_id"
+    if type_name == "ERROR":
+        return "tok_error"
+    if type_name == "END":
+        return "tok_end"
+    return "tok_op"
 
 
 EXAMPLE_DIR = os.path.join(backend.IDLE_DIR, "examples")
@@ -92,17 +172,32 @@ class CompilerIDE(tk.Tk):
             st.theme_use("clam")
         except tk.TclError:
             pass
-        st.configure("TNotebook", background=BG_PANEL, borderwidth=0)
+        st.configure(".", background=BG, borderwidth=0, focuscolor=ACCENT)
+        # 'clam' dibuja bordes/bisel en tonos claros por defecto (bordercolor,
+        # lightcolor, darkcolor) sin importar el borderwidth; se fuerzan al
+        # tono del panel para que no aparezcan lineas claras encima del tema oscuro.
+        st.configure("TNotebook", background=BG, borderwidth=0, tabmargins=(2, 4, 2, 0),
+                     bordercolor=BG, lightcolor=BG, darkcolor=BG)
         st.configure("TNotebook.Tab", background=BG_PANEL, foreground=FG_DIM,
-                     padding=(14, 6), font=UI_FONT)
+                     padding=(16, 7), font=UI_FONT, borderwidth=0,
+                     bordercolor=BG_PANEL, lightcolor=BG_PANEL, darkcolor=BG_PANEL)
         st.map("TNotebook.Tab",
-               background=[("selected", BG)], foreground=[("selected", ACCENT)])
+               background=[("selected", BG_RAISED)], foreground=[("selected", ACCENT)],
+               lightcolor=[("selected", BG_RAISED)], darkcolor=[("selected", BG_RAISED)],
+               bordercolor=[("selected", BG_RAISED)])
         st.configure("Treeview", background=BG_EDITOR, fieldbackground=BG_EDITOR,
-                     foreground=FG, borderwidth=0, font=MONO_FONT, rowheight=22)
-        st.map("Treeview", background=[("selected", SEL_BG)])
-        st.configure("Vertical.TScrollbar", background=BG_PANEL, troughcolor=BG_PANEL,
-                     borderwidth=0, arrowcolor=FG_DIM)
+                     foreground=FG, borderwidth=0, font=MONO_FONT, rowheight=24,
+                     indent=20)
+        st.map("Treeview", background=[("selected", SEL_BG)],
+               foreground=[("selected", ACCENT2)])
+        st.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])
+        st.configure("Vertical.TScrollbar", background=BG_PANEL, troughcolor=BG,
+                     borderwidth=0, arrowcolor=FG_DIM, width=10,
+                     bordercolor=BG, lightcolor=BG_PANEL, darkcolor=BG_PANEL)
+        st.map("Vertical.TScrollbar", background=[("active", SEL_BG)])
         st.configure("TPanedwindow", background=BG)
+        st.configure("Sash", sashthickness=6, gripcount=0,
+                     bordercolor=BG, lightcolor=BG, darkcolor=BG)
 
     # -- Menu ----------------------------------------------------------------
     def _build_menu(self):
@@ -142,17 +237,21 @@ class CompilerIDE(tk.Tk):
 
     # -- Toolbar -------------------------------------------------------------
     def _build_toolbar(self):
-        bar = tk.Frame(self, bg=BG_PANEL)
+        bar = tk.Frame(self, bg=BG_PANEL, highlightthickness=0)
         bar.pack(side=tk.TOP, fill=tk.X)
 
         def btn(text, cmd, accent=False):
+            base_bg = ACCENT if accent else BG_RAISED
+            base_fg = BG if accent else FG
+            hover_bg = ACCENT2 if accent else SEL_BG
             b = tk.Button(bar, text=text, command=cmd, font=UI_FONT,
-                          bg=(ACCENT if accent else SEL_BG),
-                          fg=(BG if accent else FG),
-                          activebackground=ACCENT, activeforeground=BG,
+                          bg=base_bg, fg=base_fg,
+                          activebackground=hover_bg, activeforeground=base_fg,
                           relief=tk.FLAT, padx=14, pady=6, cursor="hand2",
-                          borderwidth=0)
-            b.pack(side=tk.LEFT, padx=(8, 0), pady=6)
+                          borderwidth=0, highlightthickness=0)
+            b.pack(side=tk.LEFT, padx=(8, 0), pady=8)
+            b.bind("<Enter>", lambda e: b.configure(bg=hover_bg))
+            b.bind("<Leave>", lambda e: b.configure(bg=base_bg))
             return b
 
         self.btn_compile = btn("▶  Compilar  (F5)", self.on_compile)
@@ -170,28 +269,35 @@ class CompilerIDE(tk.Tk):
         paned.pack(fill=tk.BOTH, expand=True, padx=6, pady=6)
 
         # --- Izquierda: editor con numeros de linea ---
-        left = tk.Frame(paned, bg=BG_PANEL)
+        left = tk.Frame(paned, bg=BG_EDITOR, highlightthickness=0)
         paned.add(left, weight=3)
 
-        header = tk.Frame(left, bg=BG_PANEL)
+        header = tk.Frame(left, bg=BG_PANEL, highlightthickness=0)
         header.pack(fill=tk.X)
         tk.Label(header, text="Editor  —  lenguaje Go- (subconjunto)",
-                 bg=BG_PANEL, fg=ACCENT, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=8, pady=4)
+                 bg=BG_PANEL, fg=ACCENT, font=("Segoe UI", 10, "bold")).pack(side=tk.LEFT, padx=10, pady=6)
         self.lbl_file = tk.Label(header, text="(sin titulo)", bg=BG_PANEL, fg=FG_DIM, font=UI_FONT)
-        self.lbl_file.pack(side=tk.RIGHT, padx=8)
+        self.lbl_file.pack(side=tk.RIGHT, padx=10)
 
-        edit_frame = tk.Frame(left, bg=BG_EDITOR)
-        edit_frame.pack(fill=tk.BOTH, expand=True, padx=(6, 6), pady=(0, 6))
+        edit_frame = tk.Frame(left, bg=BG_EDITOR, highlightthickness=0)
+        edit_frame.pack(fill=tk.BOTH, expand=True)
 
         self.gutter = tk.Text(edit_frame, width=5, bg=GUTTER_BG, fg=FG_DIM,
                               font=EDITOR_FONT, relief=tk.FLAT, state=tk.DISABLED,
-                              takefocus=0, padx=6, pady=6, cursor="arrow")
+                              takefocus=0, padx=6, pady=8, cursor="arrow",
+                              highlightthickness=0, borderwidth=0)
         self.gutter.pack(side=tk.LEFT, fill=tk.Y)
 
-        self.editor = tk.Text(edit_frame, bg=BG_EDITOR, fg=FG, insertbackground=FG,
+        self.editor = tk.Text(edit_frame, bg=BG_EDITOR, fg=FG, insertbackground=ACCENT,
                               font=EDITOR_FONT, relief=tk.FLAT, undo=True, wrap=tk.NONE,
-                              padx=8, pady=6, selectbackground=SEL_BG, tabs="  ")
+                              padx=8, pady=8, selectbackground=SEL_BG,
+                              highlightthickness=0, borderwidth=0)
         self.editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        # Ancho de tabulacion real (en pixeles) equivalente a INDENT_WIDTH
+        # espacios en la fuente del editor, para que un tab literal (o la
+        # tecla Tab, ver mas abajo) siempre caiga alineado a la grilla.
+        _tabstop = tkfont.Font(font=EDITOR_FONT).measure(" " * INDENT_WIDTH)
+        self.editor.configure(tabs=(_tabstop,))
 
         yscroll = ttk.Scrollbar(edit_frame, orient=tk.VERTICAL, command=self._on_editor_scroll)
         yscroll.pack(side=tk.RIGHT, fill=tk.Y)
@@ -200,63 +306,90 @@ class CompilerIDE(tk.Tk):
 
         for tag, color in SYN.items():
             self.editor.tag_configure(tag, foreground=color)
-        self.editor.tag_configure("errline", background="#45283a")
+        self.editor.tag_configure("errline", background="#3a2230")
 
         self.editor.bind("<KeyRelease>", self._on_editor_change)
         self.editor.bind("<MouseWheel>", lambda e: self.after(1, self._sync_gutter))
         self.editor.bind("<Configure>", lambda e: self._sync_gutter())
+        self.editor.bind("<Tab>", self._on_tab)
+        self.editor.bind("<Shift-Tab>", self._on_shift_tab)
+        self.editor.bind("<ISO_Left_Tab>", self._on_shift_tab)  # Shift-Tab en Linux/X11
 
         # --- Derecha: pestanas de fases ---
-        right = tk.Frame(paned, bg=BG)
+        right = tk.Frame(paned, bg=BG, highlightthickness=0)
         paned.add(right, weight=4)
         self._build_phase_strip(right)
 
         self.nb = ttk.Notebook(right)
-        self.nb.pack(fill=tk.BOTH, expand=True, padx=4, pady=(4, 4))
+        self.nb.pack(fill=tk.BOTH, expand=True, padx=4, pady=(6, 4))
         self._build_tab_tokens()
         self._build_tab_ast()
         self._build_tab_asm()
         self._build_tab_run()
 
     def _build_phase_strip(self, parent):
-        """Fila de indicadores de estado de las 5 fases."""
-        strip = tk.Frame(parent, bg=BG_PANEL)
+        """Fila de indicadores de estado de las 5 fases, como una linea de tiempo fluida."""
+        strip = tk.Frame(parent, bg=BG_PANEL, highlightthickness=0)
         strip.pack(fill=tk.X, padx=4, pady=(4, 0))
         self.phase_labels = {}
         phases = [
-            ("lexica", "1. Lexico"),
-            ("sintactica", "2. Sintaxis"),
-            ("ast", "3. AST"),
-            ("semantica", "4. Semantica"),
-            ("codegen", "5. Codegen"),
+            ("lexica", "Lexico"),
+            ("sintactica", "Sintaxis"),
+            ("ast", "AST"),
+            ("semantica", "Semantica"),
+            ("codegen", "Codegen"),
         ]
-        for key, text in phases:
+        for i, (key, text) in enumerate(phases):
+            if i > 0:
+                tk.Label(strip, text="―", bg=BG_PANEL, fg="#233850",
+                         font=("Segoe UI", 9)).pack(side=tk.LEFT)
             lbl = tk.Label(strip, text="○ " + text, bg=BG_PANEL, fg=FG_DIM,
-                           font=("Segoe UI", 9, "bold"), padx=10, pady=6)
-            lbl.pack(side=tk.LEFT, padx=(4, 0), pady=4)
+                           font=("Segoe UI", 9), padx=8, pady=8)
+            lbl.pack(side=tk.LEFT)
             self.phase_labels[key] = lbl
 
     def _build_tab_tokens(self):
         frame = tk.Frame(self.nb, bg=BG_EDITOR)
         self.nb.add(frame, text="  Tokens  ")
         self.txt_tokens = self._make_output_text(frame)
+        self.txt_tokens.tag_configure("tok_keyword", foreground=SYN["keyword"])
+        self.txt_tokens.tag_configure("tok_num", foreground=SYN["number"])
+        self.txt_tokens.tag_configure("tok_str", foreground=SYN["string"])
+        self.txt_tokens.tag_configure("tok_id", foreground=ACCENT2)
+        self.txt_tokens.tag_configure("tok_op", foreground=SYN["op"])
+        self.txt_tokens.tag_configure("tok_error", foreground=ERR_COLOR)
+        self.txt_tokens.tag_configure("tok_end", foreground=FG_DIM)
+        self.txt_tokens.tag_configure("tok_line", foreground=FG_DIM)
+        self.txt_tokens.tag_configure("tok_header", foreground=ACCENT,
+                                       font=(MONO_FONT[0], MONO_FONT[1], "bold"))
+        self.txt_tokens.tag_configure("tok_ok", foreground=OK_COLOR)
+        self.txt_tokens.tag_configure("tok_fail", foreground=ERR_COLOR)
 
     def _build_tab_ast(self):
         frame = tk.Frame(self.nb, bg=BG_EDITOR)
         self.nb.add(frame, text="  AST  ")
-        bar = tk.Frame(frame, bg=BG_PANEL)
+        bar = tk.Frame(frame, bg=BG_EDITOR, highlightthickness=0)
         bar.pack(fill=tk.X)
-        tk.Button(bar, text="Expandir todo", command=lambda: self._expand_tree(True),
-                  font=UI_FONT, bg=SEL_BG, fg=FG, relief=tk.FLAT, padx=10,
-                  cursor="hand2", borderwidth=0).pack(side=tk.LEFT, padx=6, pady=4)
-        tk.Button(bar, text="Colapsar todo", command=lambda: self._expand_tree(False),
-                  font=UI_FONT, bg=SEL_BG, fg=FG, relief=tk.FLAT, padx=10,
-                  cursor="hand2", borderwidth=0).pack(side=tk.LEFT, padx=6, pady=4)
 
-        tree_frame = tk.Frame(frame, bg=BG_EDITOR)
-        tree_frame.pack(fill=tk.BOTH, expand=True)
+        def tbtn(text, cmd):
+            b = tk.Button(bar, text=text, command=cmd, font=UI_FONT, bg=BG_EDITOR,
+                          fg=FG_DIM, activebackground=BG_EDITOR, activeforeground=ACCENT2,
+                          relief=tk.FLAT, padx=8, pady=4, cursor="hand2", borderwidth=0,
+                          highlightthickness=0)
+            b.pack(side=tk.LEFT, padx=(8, 0), pady=6)
+            b.bind("<Enter>", lambda e: b.configure(fg=ACCENT2))
+            b.bind("<Leave>", lambda e: b.configure(fg=FG_DIM))
+            return b
+
+        tbtn("▾ Expandir todo", lambda: self._expand_tree(True))
+        tbtn("▸ Colapsar todo", lambda: self._expand_tree(False))
+
+        tree_frame = tk.Frame(frame, bg=BG_EDITOR, highlightthickness=0)
+        tree_frame.pack(fill=tk.BOTH, expand=True, padx=(4, 0))
         self.ast_tree = ttk.Treeview(tree_frame, show="tree")
         self.ast_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        for tag, color in AST_TAG_COLORS.items():
+            self.ast_tree.tag_configure(tag, foreground=color)
         sb = ttk.Scrollbar(tree_frame, orient=tk.VERTICAL, command=self.ast_tree.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.ast_tree.configure(yscrollcommand=sb.set)
@@ -265,10 +398,10 @@ class CompilerIDE(tk.Tk):
         frame = tk.Frame(self.nb, bg=BG_EDITOR)
         self.nb.add(frame, text="  Ensamblador x86-64  ")
         self.txt_asm = self._make_output_text(frame)
-        self.txt_asm.tag_configure("directive", foreground="#cba6f7")
-        self.txt_asm.tag_configure("label", foreground="#f9e2af")
-        self.txt_asm.tag_configure("mnem", foreground="#89dceb")
-        self.txt_asm.tag_configure("comment", foreground="#6c7086")
+        self.txt_asm.tag_configure("directive", foreground="#6fb8f2")
+        self.txt_asm.tag_configure("label", foreground="#e8c072")
+        self.txt_asm.tag_configure("mnem", foreground="#4fd8b0")
+        self.txt_asm.tag_configure("comment", foreground="#516575")
 
     def _build_tab_run(self):
         frame = tk.Frame(self.nb, bg=BG_EDITOR)
@@ -276,8 +409,9 @@ class CompilerIDE(tk.Tk):
 
         tk.Label(frame, text="Entrada estandar (stdin) opcional:",
                  bg=BG_EDITOR, fg=FG_DIM, font=UI_FONT, anchor="w").pack(fill=tk.X, padx=8, pady=(6, 0))
-        self.txt_stdin = tk.Text(frame, height=3, bg=BG_PANEL, fg=FG, insertbackground=FG,
-                                 font=MONO_FONT, relief=tk.FLAT, padx=8, pady=4)
+        self.txt_stdin = tk.Text(frame, height=3, bg=BG_RAISED, fg=FG, insertbackground=ACCENT,
+                                 font=MONO_FONT, relief=tk.FLAT, padx=8, pady=4,
+                                 highlightthickness=0, borderwidth=0)
         self.txt_stdin.pack(fill=tk.X, padx=8, pady=(2, 6))
 
         tk.Label(frame, text="Salida del programa:",
@@ -288,10 +422,11 @@ class CompilerIDE(tk.Tk):
         self.txt_run.tag_configure("ok", foreground=OK_COLOR)
 
     def _make_output_text(self, parent):
-        wrap = tk.Frame(parent, bg=BG_EDITOR)
+        wrap = tk.Frame(parent, bg=BG_EDITOR, highlightthickness=0)
         wrap.pack(fill=tk.BOTH, expand=True)
         txt = tk.Text(wrap, bg=BG_EDITOR, fg=FG, insertbackground=FG, font=MONO_FONT,
-                      relief=tk.FLAT, wrap=tk.NONE, padx=8, pady=6, state=tk.DISABLED)
+                      relief=tk.FLAT, wrap=tk.NONE, padx=8, pady=6, state=tk.DISABLED,
+                      highlightthickness=0, borderwidth=0)
         txt.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         sb = ttk.Scrollbar(wrap, orient=tk.VERTICAL, command=txt.yview)
         sb.pack(side=tk.RIGHT, fill=tk.Y)
@@ -327,6 +462,59 @@ class CompilerIDE(tk.Tk):
     def _on_editor_change(self, event=None):
         self._highlight()
         self._sync_gutter()
+
+    # -- Tecla Tab: indenta a espacios fijos en vez de un caracter de tab
+    #    real (que caia en una posicion inconsistente con la grilla). ------
+    def _on_tab(self, event=None):
+        try:
+            sel_start = self.editor.index(tk.SEL_FIRST)
+            sel_end = self.editor.index(tk.SEL_LAST)
+        except tk.TclError:
+            sel_start = sel_end = None
+
+        if sel_start and int(sel_start.split(".")[0]) != int(sel_end.split(".")[0]):
+            self._indent_lines(sel_start, sel_end, INDENT_WIDTH)
+        else:
+            col = int(self.editor.index(tk.INSERT).split(".")[1])
+            width = INDENT_WIDTH - (col % INDENT_WIDTH)
+            self.editor.insert(tk.INSERT, " " * width)
+        self._on_editor_change()
+        return "break"
+
+    def _on_shift_tab(self, event=None):
+        try:
+            sel_start = self.editor.index(tk.SEL_FIRST)
+            sel_end = self.editor.index(tk.SEL_LAST)
+        except tk.TclError:
+            sel_start = sel_end = None
+
+        if sel_start and int(sel_start.split(".")[0]) != int(sel_end.split(".")[0]):
+            self._indent_lines(sel_start, sel_end, -INDENT_WIDTH)
+        else:
+            line_start = f"{self.editor.index(tk.INSERT).split('.')[0]}.0"
+            line_text = self.editor.get(line_start, f"{line_start} lineend")
+            stripped = len(line_text) - len(line_text.lstrip(" "))
+            remove = min(INDENT_WIDTH, stripped)
+            if remove:
+                self.editor.delete(line_start, f"{line_start}+{remove}c")
+        self._on_editor_change()
+        return "break"
+
+    def _indent_lines(self, sel_start, sel_end, delta):
+        first = int(sel_start.split(".")[0])
+        last = int(sel_end.split(".")[0])
+        if sel_end.split(".")[1] == "0" and last > first:
+            last -= 1
+        for ln in range(first, last + 1):
+            line_start = f"{ln}.0"
+            if delta > 0:
+                self.editor.insert(line_start, " " * delta)
+            else:
+                line_text = self.editor.get(line_start, f"{line_start} lineend")
+                stripped = len(line_text) - len(line_text.lstrip(" "))
+                remove = min(-delta, stripped)
+                if remove:
+                    self.editor.delete(line_start, f"{line_start}+{remove}c")
 
     def _highlight(self):
         text = self.editor.get("1.0", tk.END)
@@ -599,7 +787,7 @@ class CompilerIDE(tk.Tk):
                 first_error = ph
 
         # Tokens
-        self._set_text(self.txt_tokens, result.get("tokens") or "(sin volcado de tokens)")
+        self._populate_tokens(result.get("tokens"))
         # AST
         self._populate_ast(result.get("ast"))
         # ASM
@@ -628,6 +816,37 @@ class CompilerIDE(tk.Tk):
             self.editor.tag_add("errline", f"{ln}.0", f"{ln}.end+1c")
             self.editor.see(f"{ln}.0")
 
+    def _populate_tokens(self, text):
+        self.txt_tokens.configure(state=tk.NORMAL)
+        self.txt_tokens.delete("1.0", tk.END)
+        if not text:
+            self.txt_tokens.insert("1.0", "(sin volcado de tokens)")
+            self.txt_tokens.configure(state=tk.DISABLED)
+            return
+        for raw_line in text.splitlines():
+            stripped = raw_line.strip()
+            if stripped == "Scanner":
+                self.txt_tokens.insert(tk.END, raw_line + "\n", "tok_header")
+                continue
+            if stripped == "Scanner exitoso":
+                self.txt_tokens.insert(tk.END, raw_line + "\n", "tok_ok")
+                continue
+            if stripped in ("Scanner no exitoso", "Caracter invalido"):
+                self.txt_tokens.insert(tk.END, raw_line + "\n", "tok_fail")
+                continue
+            m = TOKEN_LINE_RE.search(raw_line)
+            if not m:
+                self.txt_tokens.insert(tk.END, raw_line + "\n")
+                continue
+            lineinfo = m.group("lineinfo") or ""
+            core_end = m.end() - len(lineinfo)
+            self.txt_tokens.insert(tk.END, raw_line[:m.start()])
+            self.txt_tokens.insert(tk.END, raw_line[m.start():core_end], _token_tag(m.group("type")))
+            if lineinfo:
+                self.txt_tokens.insert(tk.END, lineinfo, "tok_line")
+            self.txt_tokens.insert(tk.END, raw_line[m.end():] + "\n")
+        self.txt_tokens.configure(state=tk.DISABLED)
+
     def _populate_ast(self, ast_json):
         self.ast_tree.delete(*self.ast_tree.get_children())
         if not ast_json:
@@ -638,12 +857,15 @@ class CompilerIDE(tk.Tk):
             self.ast_tree.insert("", tk.END, text="(AST no disponible)")
             return
 
-        def insert(node, parent):
-            nid = self.ast_tree.insert(parent, tk.END, text=node.get("label", "?"), open=True)
+        def insert(node, parent, depth):
+            label = node.get("label", "?")
+            icon, tag = _ast_icon_and_tag(label)
+            nid = self.ast_tree.insert(parent, tk.END, text=f"{icon}  {label}",
+                                        open=(depth < 2), tags=(tag,))
             for ch in node.get("children", []):
-                insert(ch, nid)
+                insert(ch, nid, depth + 1)
 
-        insert(data, "")
+        insert(data, "", 0)
 
     def _expand_tree(self, opened):
         def walk(item):

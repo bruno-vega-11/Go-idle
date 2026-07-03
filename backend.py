@@ -28,7 +28,7 @@ import sys
 
 # --- Rutas base -------------------------------------------------------------
 IDLE_DIR    = os.path.dirname(os.path.abspath(__file__))
-PROJECT_DIR = os.path.abspath(os.path.join(IDLE_DIR, "..", "ProyectoCompiladoresC-"))
+PROJECT_DIR = os.path.abspath(os.path.join(IDLE_DIR, "..", "ProyectoCompiladoresGolang"))
 DRIVER_DIR  = os.path.join(IDLE_DIR, "driver")
 BUILD_DIR   = os.path.join(IDLE_DIR, "build")
 WORK_DIR    = os.path.join(BUILD_DIR, "work")     # artefactos por-fase de la sesion
