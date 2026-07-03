@@ -1,5 +1,7 @@
 # Artefactos generados por el IDE
 build/
+__pycache__/
+*.pyc
 *.exe
 *.o
 *.obj

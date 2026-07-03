@@ -1,0 +1,309 @@
+===============================================================================
+  COMO FUNCIONA EL IDE  —  Compilador Go- -> x86-64
+  Explicacion tecnica: arquitectura, decisiones y "malabares" que hubo que
+  hacer para que todo funcionara.
+===============================================================================
+
+Este documento explica, en lenguaje llano pero con el detalle tecnico
+necesario, como esta armado el IDE que esta en esta carpeta (idle/), como se
+conecta con el compilador de C++ del proyecto (../ProyectoCompiladoresC-), y
+cuales fueron los problemas concretos que aparecieron y como se resolvieron.
+
+
+-------------------------------------------------------------------------------
+0. RESUMEN EN UNA FRASE
+-------------------------------------------------------------------------------
+El IDE es una aplicacion de escritorio en Python + Tkinter que:
+  1) compila UNA vez el compilador de C++ del proyecto (con g++),
+  2) lo usa para procesar el codigo que escribe el usuario,
+  3) muestra cada fase de la compilacion (tokens, AST, ensamblador),
+  4) y ADEMAS ensambla y EJECUTA de verdad el binario x86-64 generado,
+     mostrando su salida.
+
+Todo lo que se muestra (AST y ensamblador) es la salida REAL del compilador,
+no una imitacion hecha en Python.
+
+
+-------------------------------------------------------------------------------
+1. EL PUNTO DE PARTIDA: QUE HABIA Y QUE FALTABA
+-------------------------------------------------------------------------------
+El proyecto original (carpeta ProyectoCompiladoresC-) es un compilador en C++
+para un subconjunto de Go. Tiene las 4 fases clasicas:
+
+   Fase 1 - Lexica     (scanner.cpp)      -> convierte texto en tokens
+   Fase 2 - Sintactica (parser.cpp)       -> construye el AST
+   Fase 3 - Semantica  (TypeCheker.cpp)   -> chequea tipos
+   Fase 4 - Generacion (GenCode.cpp)      -> emite ensamblador x86-64 (AT&T)
+
+Su main.cpp junta todo y, para un archivo de entrada, produce:
+   - <archivo>_tokens.txt   (volcado de la fase lexica)
+   - output.s               (el ensamblador generado)
+
+Lo que FALTABA para poder armar el IDE pedido:
+   (a) El compilador NO volcaba el AST a ningun lado. Solo lo construia en
+       memoria y lo consumia internamente. Sin volcado, no habia como
+       "Visualizar el AST" desde afuera.
+   (b) No habia forma de EJECUTAR el programa compilado en esta maquina
+       (Windows), porque el ensamblador esta pensado para Linux (ver punto 4).
+   (c) No habia ninguna interfaz grafica.
+
+El IDE resuelve (a), (b) y (c) SIN TOCAR ni un archivo del compilador
+original. Todo lo nuevo vive en idle/.
+
+
+-------------------------------------------------------------------------------
+2. ARQUITECTURA GENERAL (quien habla con quien)
+-------------------------------------------------------------------------------
+
+   ┌─────────────────────────────────────────────────────────────┐
+   │  ide.py   (Tkinter: ventana, editor, pestañas, botones)      │
+   │     - No sabe NADA de compiladores; solo pinta y captura     │
+   │       clics. Corre las tareas pesadas en hilos (threads)     │
+   │       para que la ventana no se congele.                     │
+   └───────────────────────────┬─────────────────────────────────┘
+                               │  llamadas a funciones
+                               v
+   ┌─────────────────────────────────────────────────────────────┐
+   │  backend.py   (orquestacion, sin Tkinter)                    │
+   │     build_driver()   -> compila el compilador + driver       │
+   │     compile_source() -> corre las fases sobre un .go-        │
+   │     build_program()  -> ensambla el .s a un .exe             │
+   │     run_program()    -> ejecuta el .exe y captura la salida  │
+   └───────────────┬───────────────────────────┬─────────────────┘
+                   │ g++                        │ gcc
+                   v                            v
+   ┌───────────────────────────┐   ┌─────────────────────────────┐
+   │  driver/ide_main.cpp      │   │  El .s generado + (Windows)  │
+   │  driver/ast_json.cpp      │   │  driver/runtime_win.c        │
+   │   +  los .cpp del          │   │   -> binario nativo x86-64   │
+   │      compilador original   │   │                              │
+   │   =  build/ide_driver.exe  │   └─────────────────────────────┘
+   └───────────────────────────┘
+
+Regla de oro del diseño: la interfaz (ide.py) NUNCA ejecuta procesos ni conoce
+rutas de compiladores. Todo eso esta encapsulado en backend.py, que ademas se
+puede usar solo desde la terminal (`python backend.py archivo.go-`) para
+probar sin abrir la ventana.
+
+
+-------------------------------------------------------------------------------
+3. MALABAR #1: OBTENER EL AST REAL SIN TOCAR EL COMPILADOR
+-------------------------------------------------------------------------------
+Problema: el compilador construye el AST en memoria pero no lo escribe a
+ningun archivo, y no se quería modificar el codigo original.
+
+Solucion: se escribio un "driver" propio para el IDE que reemplaza a main.cpp
+SIN modificarlo. Son dos archivos nuevos que se compilan JUNTO a los .cpp del
+compilador:
+
+   driver/ide_main.cpp  -> un main() alternativo que corre las 4 fases igual
+                           que el original, pero:
+                             * escribe los artefactos donde el IDE los espera,
+                             * imprime el estado de cada fase en un formato
+                               que el IDE parsea facil (lineas "FASE|x|OK"),
+                             * y, tras parsear, llama al volcador de AST.
+
+   driver/ast_json.cpp  -> recorre el AST REAL (los mismos nodos de ast.h que
+                           usa el TypeChecker y GenCode) con dynamic_cast y lo
+                           emite como un arbol JSON:
+                               {"label": "...", "children": [ ... ]}
+                           El IDE lee ese JSON y lo dibuja en un widget de
+                           arbol (ttk.Treeview).
+
+Por que esto es "el AST real" y no una copia: ast_json.cpp NO reimplementa el
+parser. Recibe el puntero Programa* que devolvio parser.parseProgram() y lo
+camina. Si el parser arma mal el arbol, el IDE lo muestra mal tambien: es fiel
+al compilador. Por eso sirve para la defensa del proyecto.
+
+Detalle fino: el volcador de tokens del compilador (ejecutar_scanner) genera el
+nombre de salida quitando la ultima extension del input y agregando
+"_tokens.txt". Para que ese archivo caiga en la carpeta de trabajo del IDE, el
+driver le pasa una ruta con forma "<carpeta>/<base>.ignore", de modo que al
+quitarle ".ignore" y agregar "_tokens.txt" queda exactamente donde se lo
+espera. Es un truco chico pero evita tener que tocar scanner.cpp.
+
+
+-------------------------------------------------------------------------------
+4. MALABAR #2 (EL GRANDE): EJECUTAR EN WINDOWS CODIGO PENSADO PARA LINUX
+-------------------------------------------------------------------------------
+Este fue el problema mas serio.
+
+El compilador genera ensamblador x86-64 con la ABI System V (la de Linux):
+   - Los argumentos enteros/punteros van en los registros %rdi, %rsi, %rdx...
+   - Los argumentos flotantes van en %xmm0, %xmm1...
+   - Las llamadas a la libreria estandar se hacen a "printf@PLT",
+     "malloc@PLT", etc. (el @PLT es una convencion de enlazado de Linux/ELF).
+   - Al final aparece ".section .note.GNU-stack" (metadato de ELF).
+
+Pero esta maquina es Windows, y ahi la libreria de C usa la ABI Win64:
+   - Los argumentos van en %rcx, %rdx, %r8, %r9 (¡registros distintos!).
+
+Consecuencia: si uno ensambla el .s y lo corre tal cual en Windows, el
+programa hace SEGMENTATION FAULT. Esto se comprobo en la practica: printf
+buscaba sus argumentos en %rcx pero el codigo generado los habia dejado en
+%rdi, asi que leia basura.
+
+Se probaron dos ideas y se descarto la primera:
+
+  Idea descartada: interceptar printf con una funcion variadica propia. No
+  sirve, porque trasladar una lista de argumentos variable (va_list) de una
+  ABI a otra es fragil y depende del compilador.
+
+  Solucion adoptada (driver/runtime_win.c): envoltorios NO variadicos,
+  marcados con __attribute__((sysv_abi)). Esto le dice a gcc: "esta funcion
+  recibe sus argumentos con la convencion de Linux". Adentro, cada envoltorio
+  simplemente llama a la funcion real de la libc (que usa Win64). gcc genera
+  automaticamente el "puente" entre ambas ABIs. Como son funciones de
+  aridad FIJA (un formato + un valor), no hace falta lidiar con va_list.
+
+  Ejemplo (imprimir un entero):
+     __attribute__((sysv_abi)) int __sysv_print_int(const char* fmt, long v){
+         return printf(fmt, v);   // aqui gcc pasa al Win64 solito
+     }
+
+Para que el codigo generado use estos envoltorios, backend.py reescribe el .s
+ANTES de ensamblarlo, SOLO en Windows (funcion _prepare_asm_for_platform):
+   - "call printf@PLT" (segun el formato) ->  "call __sysv_print_int" / _flt /
+                                              _str / _nl
+   - "call malloc@PLT" -> "call __sysv_malloc", idem calloc/strlen/strcpy/strcat
+   - borra los "@PLT" que queden y la linea ".note.GNU-stack".
+
+En Linux nada de esto se aplica: el .s se ensambla tal cual con gcc y listo.
+Asi el mismo IDE funciona en los dos sistemas.
+
+Resultado verificado: el ejemplo de floats imprime 12.566360 y "Hola mundo",
+el de struct imprime 42, etc. Es EJECUCION REAL del binario, no simulacion.
+
+
+-------------------------------------------------------------------------------
+5. MALABAR #3: ENCONTRAR EL COMPILADOR (g++/gcc) EN WINDOWS
+-------------------------------------------------------------------------------
+En esta maquina g++/gcc NO estan en el PATH global: viven en la instalacion de
+MSYS2, en C:\msys64\ucrt64\bin. Si backend.py solo mirara el PATH, no
+encontraria nada y el IDE seria inutil.
+
+Solucion (backend._find_tool): primero busca en el PATH (shutil.which) y, si no
+esta, prueba una lista de ubicaciones tipicas de MinGW/MSYS2 en Windows
+(ucrt64, mingw64, etc.). Ademas, cuando ejecuta g++/gcc o el binario final,
+antepone la carpeta del compilador al PATH del proceso hijo, para que este
+encuentre sus DLLs de runtime (libstdc++, etc.). Sin eso, el .exe podria
+fallar por no hallar una DLL.
+
+(Nota: hubo un detalle curioso — el .exe del compilador dejaba de arrancar si
+se ponia ucrt64 al frente del PATH por un choque de DLLs; por eso el IDE arma
+el compilador desde cero con g++ en vez de reusar el .exe precompilado del
+repo, y controla el entorno de cada llamada.)
+
+
+-------------------------------------------------------------------------------
+6. MALABAR #4: ACENTOS (UTF-8 vs cp1252)
+-------------------------------------------------------------------------------
+El compilador imprime mensajes de error con acentos, ej:
+   "Error sintáctico: se esperaba ..."
+codificados en UTF-8.
+
+Python en Windows, al capturar la salida de un proceso con text=True, la
+decodifica por defecto con la codificacion local (cp1252). Eso convertia la
+"á" en "Ã¡" (mojibake) y el mensaje de error se veia roto en el IDE.
+
+Solucion (backend._run): forzar encoding="utf-8" (con errors="replace") al
+capturar stdout/stderr de todos los subprocesos. Con eso los mensajes de error
+del compilador llegan intactos a la interfaz.
+
+
+-------------------------------------------------------------------------------
+7. COMO SE MANEJAN LOS ERRORES DE CADA FASE
+-------------------------------------------------------------------------------
+El driver imprime una linea por fase:
+   FASE|lexica|OK
+   FASE|sintactica|ERROR|Error sintáctico: ...
+   FASE|semantica|BEGIN        (marcador: "empece la semantica")
+   FASE|semantica|OK
+
+Por que el marcador BEGIN: el TypeChecker y GenCode del proyecto, ante un error,
+NO lanzan una excepcion atrapable — hacen exit(1) e imprimen su propio mensaje
+("Error semantico: ..."). Entonces el driver nunca llega a imprimir el OK. El
+IDE detecta ese caso asi: si vio "BEGIN" pero nunca "OK", la fase fallo, y
+busca el mensaje de error en la salida. Asi cada tipo de error (lexico,
+sintactico, semantico) se atribuye a la fase correcta.
+
+En la interfaz esto se ve como 5 indicadores arriba a la derecha:
+   ● verde  = fase OK
+   ✖ rojo   = fase con error (las siguientes quedan en gris "omitidas")
+   ○ gris   = pendiente / no ejecutada
+Y si el error trae numero de linea, el editor resalta esa linea.
+
+
+-------------------------------------------------------------------------------
+8. FLUJO COMPLETO CUANDO EL USUARIO PULSA "COMPILAR Y EJECUTAR"
+-------------------------------------------------------------------------------
+   1. ide.py toma el texto del editor y lo manda a backend en un hilo aparte.
+   2. backend.build_driver(): si el compilador+driver no esta compilado (o
+      cambio una fuente), lo compila con g++ a build/ide_driver.exe. Se cachea:
+      la primera vez tarda unos segundos, despues es instantaneo.
+   3. backend.compile_source(): guarda el codigo en build/work/, corre
+      ide_driver.exe sobre el, y recolecta:
+         - <base>_tokens.txt   (fase lexica)
+         - <base>_ast.json      (AST real)
+         - <base>.s             (ensamblador x86-64)
+         - el estado OK/ERROR de cada fase
+   4. Si las 5 fases dieron OK y el usuario pidio ejecutar:
+         backend.build_program(): reescribe el .s (puente de ABI en Windows) y
+         lo ensambla con gcc + runtime_win.c a un .exe.
+         backend.run_program(): ejecuta ese .exe (con stdin opcional) y captura
+         su stdout/stderr/codigo de salida.
+   5. ide.py, de vuelta en el hilo de la interfaz (via una cola de mensajes,
+      porque Tkinter no es thread-safe), pinta: indicadores de fase, tokens,
+      arbol del AST, ensamblador coloreado y la salida de la ejecucion.
+
+
+-------------------------------------------------------------------------------
+9. POR QUE TKINTER Y NO OTRA COSA
+-------------------------------------------------------------------------------
+El pedido menciono "una libreria de Python para desarrollar IDLEs". Esa
+libreria es Tkinter: es la GUI estandar de Python y es, de hecho, sobre la que
+esta construido el propio IDLE de Python. Ventaja practica enorme: viene
+incluida con Python en Windows y macOS, asi que el IDE NO necesita instalar
+ninguna dependencia extra de Python. Solo hace falta Python y el toolchain de C.
+
+
+-------------------------------------------------------------------------------
+10. ARCHIVOS DE ESTA CARPETA Y QUE HACE CADA UNO
+-------------------------------------------------------------------------------
+   ide.py                 La interfaz grafica (editor, pestañas, botones).
+   backend.py             Toda la logica: build/compile/assemble/run + deteccion
+                          del toolchain + reescritura del .s + encoding.
+   driver/ide_main.cpp    main() alternativo para el IDE (fases + estado).
+   driver/ast_json.cpp    Volcado del AST real del parser a JSON.
+   driver/ast_json.h      Cabecera del volcador de AST.
+   driver/runtime_win.c   Puente de ABI SysV->Win64 (solo se usa en Windows).
+   examples/*.go-         6 programas de ejemplo (cubren las features del lenguaje).
+   build/                 Se genera solo: el driver compilado y los artefactos
+                          de trabajo de cada compilacion.
+   run_ide.bat / .sh      Lanzadores (Windows / Linux-macOS).
+   README.md              Guia de uso rapida.
+   COMO_FUNCIONA.txt      Este documento.
+
+IMPORTANTE: la carpeta ../ProyectoCompiladoresC- (el compilador original) NO se
+modifica en absoluto. El IDE solo lee y compila sus fuentes.
+
+
+-------------------------------------------------------------------------------
+11. REQUISITOS Y COMO CORRERLO
+-------------------------------------------------------------------------------
+Necesitas:
+   - Python 3.8+ con Tkinter (incluido en la instalacion estandar; en Linux:
+     sudo apt install python3-tk).
+   - g++ y gcc. En Windows: MSYS2 (pacman -S mingw-w64-ucrt-x86_64-gcc). El IDE
+     detecta C:\msys64\ucrt64\bin aunque no este en el PATH.
+
+Para correrlo:
+   - Windows: doble clic en run_ide.bat  (o  python ide.py)
+   - Linux/macOS/Git Bash: ./run_ide.sh  (o  python3 ide.py)
+
+Para probar sin interfaz (util para depurar):
+   python backend.py examples/04_struct_metodo.go-
+
+===============================================================================
+FIN
+===============================================================================
